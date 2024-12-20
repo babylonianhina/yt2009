@@ -2,13 +2,22 @@ const fetch = require("node-fetch")
 const constants = require("./yt2009constants.json")
 const yt2009exports = require("./yt2009exports")
 const fs = require("fs")
-const yt2009tvsignin = require("./yt2009tvsignin")
+const yt2009signin = require("./yt2009androidsignin")
 const dominant_color = require("./dominant_color")
 const config = require("./config.json")
 const tokens = config.tokens || ["amogus"]
 const logged_tokens = config.logged_tokens || []
 const templocked_tokens = config.templocked_tokens || []
 const useTShare = fs.existsSync("./yt2009ts.js")
+const androidHeaders = {"headers": {
+    "accept": "*/*",
+    "accept-language": "en-US,en;q=0.9,pl;q=0.8",
+    "content-type": "application/json",
+    "cookie": "",
+    "x-goog-authuser": "0",
+    "x-origin": "https://www.youtube.com/",
+    "user-agent": "com.google.android.youtube/19.02.39 (Linux; U; Android 14) gzip"
+}}
 const wlist = /discord.gg|tiktok|tik tok|pre-vevo|2023|lnk.to|official hd video|smarturl/gui
 let ip_uses_flash = []
 let ratelimitData = {}
@@ -531,16 +540,24 @@ module.exports = {
     },
 
     
-    "markupDescription": function(description) {
+    "markupDescription": function(description, useRedir) {
         let descriptionMarkedup = ``
         description.split("<br>").forEach(part => {
             part.split(" ").forEach(word => {
                 if(word.startsWith("http://")
                 || word.startsWith("https://")) {
+                    let displayWord = (
+                        word.length > 40
+                        ? word.substring(0, 40) + "..." 
+                        : word
+                    )
+                    if(useRedir && word.includes("//www.youtube.com/")) {
+                        word = word.replace("http://www.youtube.com", "")
+                        word = word.replace("https://www.youtube.com", "")
+                    }
                     descriptionMarkedup += 
                     "<a href=\"" + word + "\" target=\"_blank\">"
-                    + (word.length > 40 ? word.substring(0, 40) + "..." : word)
-                    + "</a>"
+                    + displayWord + "</a>"
                 } else {
                     descriptionMarkedup += `${word} `
                 }
@@ -897,6 +914,37 @@ module.exports = {
         let parsedPlaylists = []
         if(section.gridRenderer) {
             section.gridRenderer.items.forEach(item => {
+                if(item.lockupViewModel
+                && item.lockupViewModel.contentType == "LOCKUP_CONTENT_TYPE_PLAYLIST") {
+                    item = item.lockupViewModel
+                    let videoId = item.rendererContext.commandContext.onTap
+                                      .innertubeCommand.watchEndpoint.videoId;
+
+                    // video count
+                    let vcount = 0;
+                    item.contentImage.collectionThumbnailViewModel
+                    .primaryThumbnail.thumbnailViewModel.overlays.forEach(o => {
+                        if(o.thumbnailOverlayBadgeViewModel) {
+                            o = o.thumbnailOverlayBadgeViewModel;
+                            let v = o.thumbnailBadges[0]
+                                     .thumbnailBadgeViewModel.text;
+                            vcount = this.bareCount(v).toString()
+                        }
+                    })
+
+                    let title = item.metadata.lockupMetadataViewModel.title;
+                    if(title.content) {title = title.content;}
+                    let id = item.contentId;
+
+                    parsedPlaylists.push({
+                        "name": title,
+                        "id": id,
+                        "videos": vcount,
+                        "thumbnail": "//i.ytimg.com/vi/"
+                                     + videoId
+                                     + "/hqdefault.jpg",
+                    })
+                }
                 if(item.gridPlaylistRenderer) {
                     item = item.gridPlaylistRenderer
                     let videoId = item.navigationEndpoint.watchEndpoint.videoId
@@ -1052,54 +1100,19 @@ module.exports = {
         .pipe(writeStream)*/
     },
 
-    "saveMp4_android": function(id, callback, extended, quality) {
-        if(!quality) {
-            quality = "360p"
-        }
+    "testF18": function(url, callback) {
+        const newHeaders = { ...androidHeaders };
+        newHeaders.headers.range = `bytes=0-1`;
+        fetch(url, newHeaders).then(r => {
+            callback(r.status !== 403)
+        })
+    },
 
-        let fname = `${id}-${quality}`
-        if(quality == "360p") {
-            fname = id;
-        }
+    "saveMp4_android": function(id, callback, existingPlayer, quality) {
+        let testF18 = this.testF18;
+        let downloadInParts_file = this.downloadInParts_file;
 
-        if(yt2009exports.getStatus(fname)) {
-            yt2009exports.waitForStatusChange(fname, () => {
-                callback(`${fname}.mp4`)
-            })
-            return;
-        }
-
-        yt2009exports.updateFileDownload(fname, 1)
-
-        let rHeaders = JSON.parse(JSON.stringify(constants.headers))
-        rHeaders["user-agent"] = "com.google.android.youtube/19.02.39 (Linux; U; Android 14) gzip"
-        if(yt2009tvsignin.needed() && yt2009tvsignin.getTvData().accessToken) {
-            let tv = yt2009tvsignin.getTvData()
-            rHeaders.Authorization = `${tv.tokenType} ${tv.accessToken}`
-        }
-        fetch("https://www.youtube.com/youtubei/v1/player?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8", {
-            "headers": rHeaders,
-            "referrer": "https://www.youtube.com/watch?v=" + id,
-            "referrerPolicy": "origin-when-cross-origin",
-            "body": JSON.stringify({
-                "context": {
-                "client": {
-                    "hl": "en",
-                    "clientName": "ANDROID",
-                    "clientVersion": "19.02.39",
-                    "androidSdkVersion": 34,
-                    "mainAppWebInfo": {
-                        "graftUrl": "/watch?v=" + id
-                    }
-                }
-                },
-                "videoId": id,
-                "racyCheckOk": true,
-                "contentCheckOk": true
-            }),
-            "method": "POST",
-            "mode": "cors"
-        }).then(r => {r.json().then(r => {
+        function parseResponse(r) {
             // parse formats
             if(!r.streamingData) {
                 callback(false)
@@ -1109,10 +1122,13 @@ module.exports = {
             let qualities = {}
             let h264DashAudioUrl;
             // prefer nondash formats
-            r.streamingData.formats.forEach(q => {
-                q.dash = false;
-                qualities[q.qualityLabel] = q;
-            })
+            // existingPlayer exists = re-called due to nonworking f18
+            if(!existingPlayer) {
+                r.streamingData.formats.forEach(q => {
+                    q.dash = false;
+                    qualities[q.qualityLabel] = q;
+                })
+            }
             // add h264 dash formats
             let audioFormats = []
             r.streamingData.adaptiveFormats.forEach(q => {
@@ -1131,24 +1147,20 @@ module.exports = {
             h264DashAudioUrl = audioFormats[0].url
 
             // check if dash audio is needed
-            // we can pull from already download mp4 if not
             let downloadAudio = true;
             let audioDownloadDone = false;
             let videoDownloadDone = false;
-            /*if(fs.existsSync("../assets/" + id + ".mp4")) {
-                downloadAudio = false;
-            }*/
             if(quality == "360p" && !qualities["360p"]) {
                 for(let q in qualities) {
                     if(qualities[q].itag == 18) {quality = q;}
                 }
             }
-            if(qualities[quality] && !qualities[quality].dash) {
+            if(qualities[quality] && !qualities[quality].dash && !existingPlayer) {
                 downloadAudio = false;
             }
 
             if(downloadAudio) {
-                this.downloadInParts_file(
+                downloadInParts_file(
                     h264DashAudioUrl,
                     "../assets/" + id + "-audio.m4a",
                     (() => {
@@ -1159,19 +1171,25 @@ module.exports = {
                     })
                 )
             } else {
-                this.downloadInParts_file(
-                    qualities[quality].url,
-                    "../assets/" + fname + ".mp4",
-                    (() => {
-                        callback(`${fname}.mp4`)
-                        yt2009exports.updateFileDownload(`${fname}`, 2)
-                    })
-                )
+                testF18(qualities[quality].url, (working) => {
+                    if(working) {
+                        downloadInParts_file(
+                            qualities[quality].url,
+                            "../assets/" + fname + ".mp4",
+                            (() => {
+                                callback(`${fname}.mp4`)
+                                yt2009exports.updateFileDownload(`${fname}`, 2)
+                            })
+                        )
+                    } else {
+                        this.saveMp4_android(id, callback, r, quality)
+                    }
+                })
                 return;
             }
 
             // download video if quality requirement satisfied
-            // override 1080 with 720 for exp_hd
+            // override 1080 with 720 for exp_hd, other patchups for qualities
             if(!qualities["1080p"] && quality == "1080p") {
                 quality = "720p"
                 fs.writeFileSync("../assets/" + id + "-1080p.mp4", "")
@@ -1182,13 +1200,20 @@ module.exports = {
             if(!qualities[quality] && qualities[quality + "50"]) {
                 quality = quality + "50"
             }
+            if(!qualities[quality] && quality == "360p") {
+                let qlist = []
+                for(let q in qualities) {
+                    qlist.push(q)
+                }
+                quality = q;
+            }
             if(!qualities[quality]) {
                 callback(false)
                 yt2009exports.updateFileDownload(fname, 2)
                 return;
             }
 
-            this.downloadInParts_file(
+            downloadInParts_file(
                 qualities[quality].url,
                 "../assets/" + id + "-temp-" + quality + ".mp4",
                 (() => {
@@ -1232,20 +1257,74 @@ module.exports = {
                     yt2009exports.updateFileDownload(fname, 2)
                 })
             }
+        }
+
+        if(existingPlayer) {
+            parseResponse(existingPlayer)
+            return;
+        }
+
+        if(!quality) {
+            quality = "360p"
+        }
+
+        let fname = `${id}-${quality}`
+        if(quality == "360p") {
+            fname = id;
+        }
+
+        if(yt2009exports.getStatus(fname)) {
+            yt2009exports.waitForStatusChange(fname, () => {
+                callback(`${fname}.mp4`)
+            })
+            return;
+        }
+
+        yt2009exports.updateFileDownload(fname, 1)
+
+        if(yt2009exports.read().players[id]) {
+            parseResponse(yt2009exports.read().players[id])
+            setTimeout(() => {
+                yt2009exports.delete("players", id)
+            }, 200)
+            return;
+        }
+
+        let rHeaders = JSON.parse(JSON.stringify(constants.headers))
+        rHeaders["user-agent"] = "com.google.android.youtube/19.02.39 (Linux; U; Android 14) gzip"
+        if(yt2009signin.needed() && yt2009signin.getData().yAuth) {
+            let d = yt2009signin.getData().yAuth
+            rHeaders.Authorization = `Bearer ${d}`
+        }
+        fetch("https://www.youtube.com/youtubei/v1/player?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8", {
+            "headers": rHeaders,
+            "referrer": "https://www.youtube.com/watch?v=" + id,
+            "referrerPolicy": "origin-when-cross-origin",
+            "body": JSON.stringify({
+                "context": {
+                "client": {
+                    "hl": "en",
+                    "clientName": "ANDROID",
+                    "clientVersion": "19.02.39",
+                    "androidSdkVersion": 34,
+                    "mainAppWebInfo": {
+                        "graftUrl": "/watch?v=" + id
+                    }
+                }
+                },
+                "videoId": id,
+                "racyCheckOk": true,
+                "contentCheckOk": true
+            }),
+            "method": "POST",
+            "mode": "cors"
+        }).then(r => {r.json().then(r => {
+            parseResponse(r);
         })})
     },
 
     "downloadInParts_file": function(url, out, callback) {
-        const androidHeaders = {"headers": {
-            "accept": "*/*",
-            "accept-language": "en-US,en;q=0.9,pl;q=0.8",
-            "content-type": "application/json",
-            "cookie": "",
-            "x-goog-authuser": "0",
-            "x-origin": "https://www.youtube.com/",
-            "user-agent": "com.google.android.youtube/19.02.39 (Linux; U; Android 14) gzip"
-        }}
-        const partSize = 9_000_000; //9MB
+        const partSize = 9 * 1000 * 1000; //9MB
         const stream = fs.createWriteStream(out, { flags: 'a' });
         function fetchNextPart(partNumber) {
             let partStartB = partNumber * partSize;

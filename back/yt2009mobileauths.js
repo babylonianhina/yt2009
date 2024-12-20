@@ -19,6 +19,8 @@ let gdataAuths = require("./cache_dir/gdata_auths.json")
 module.exports = {
     "isAuthorized": function(req, res, onError) {
         if(!config.gdata_auth
+        || (config.gdata_auth && !config.tokens)
+        || (config.gdata_auth && !config.tokens[0])
         || (config.gdata_auth && config.tokens[0] == "*")) {
             return true;
         }
@@ -116,7 +118,7 @@ module.exports = {
         }
         req.query.device = req.query.device
                            .replace(/[^a-zA-Z0-9]/g, "")
-                           .substring(0, 6)
+                           .substring(0, 9)
         
         let msg = ""
         if(req.query.c) {
@@ -168,13 +170,15 @@ module.exports = {
             return;
         }
 
-        device = device.replace(/[^a-zA-Z0-9]/g, "").substring(0, 6)
+        device = device.replace(/[^a-zA-Z0-9]/g, "").substring(0, 9)
 
-        if(config.templocked_tokens.includes(token)) {
+        if(config.templocked_tokens
+        && config.templocked_tokens.includes(token)) {
             res.redirect("/mobile/gdata_gen_auth_page?device=" + device + "&c=2")
             return;
         }
-        if(!config.tokens.includes(token)) {
+        if(config.tokens
+        && !config.tokens.includes(token)) {
             res.redirect("/mobile/gdata_gen_auth_page?device=" + device + "&c=1")
             return;
         }

@@ -205,7 +205,7 @@ module.exports = {
         // need to figure out what that does, leaving it in as it's
         // what came out of decode
         msg.setChipparam(
-            "8gYuGix6KhImCiQ2NTMyYTQzMi0wMDAwLTI3ODQtOTYzOC0xNGMxNGVmNDA5YjAYAg%3D%3D"
+            "8gYuGix6KhImCiQ2N2ViM2Y1NS0wMDAwLTI2ZWEtYjE4NS01ODI0MjliZTA1NjggAg%3D%3D"
         )
         vidsContinuation.addMsg(msg)
         let chip = encodeURIComponent(Buffer.from(
@@ -1753,11 +1753,29 @@ module.exports = {
                 "mode": "cors"
             }).then(r => {r.json().then(r => {
                 let videoCount = ""
-                try {
-                    videoCount = r.header.c4TabbedHeaderRenderer
-                                  .videosCountText.runs[0].text
+                if(r.header.pageHeaderRenderer) {
+                    try {
+                        let vm = r.header.pageHeaderRenderer
+                                  .content.pageHeaderViewModel;
+                        vm.metadata.contentMetadataViewModel
+                          .metadataRows.forEach(r => {
+                            if(r.metadataParts) {
+                                r.metadataParts.forEach(mp => {
+                                    if(mp.text && mp.text.content.includes(" videos")) {
+                                        videoCount = mp.text.content.split(" ")[0]
+                                    }
+                                })
+                            }
+                        })
+                    }
+                    catch(error) {console.log(error)}
+                } else if(r.header.c4TabbedHeaderRenderer) {
+                    try {
+                        videoCount = r.header.c4TabbedHeaderRenderer
+                                      .videosCountText.runs[0].text
+                    }
+                    catch(error) {} 
                 }
-                catch(error) {}
                 if(n_impl_yt2009channelcache.read("main")[id]
                 && !n_impl_yt2009channelcache.read("main")[id].videoCount
                 && videoCount.length !== 0) {

@@ -82,6 +82,17 @@ if(config.env == "dev") {
     });
 }
 
+if(require("os").totalmem() <= 110000000) {
+    console.log(`
+        
+    
+    low RAM amount (1G or less) detected!
+    you might run into issues with video encoding.
+    
+    
+`)
+}
+
 if(fs.existsSync("./yt2009experimentals.js")) {
     try {
         require("./yt2009experimentals").set(app)
@@ -103,11 +114,13 @@ if(config.redirmode
     console.log("/!\\ config.redirmode set incorrectly. ignoring.")
 }
 
+require("./yt2009androidsignin").set(app)
+
 // ws sync with master
 let syncCommentCallbacks = {}
 let syncCheckCallbacks = {}
 if(!config.disableWs) {
-    let wsIp = config.overrideMaster || "wss://orzeszek.website:178"
+    let wsIp = config.overrideMaster || "wss://u.orzeszek.website:178"
     function initWs() {
         if(yt2009_exports.read().masterWs) return;
         const ws = require("ws")
@@ -119,7 +132,8 @@ if(!config.disableWs) {
             w.addEventListener("open", () => {
                 w.send(JSON.stringify({
                     "type": "hello",
-                    "user": "yt2009server"
+                    "user": "yt2009server",
+                    "v": version
                 }))
             })
             w.addEventListener("message", (m) => {
@@ -163,6 +177,20 @@ if(!config.disableWs) {
                     case "inbox_feedback": {
                         if(syncInboxCallbacks[m.id]) {
                             syncInboxCallbacks[m.id](m)
+                        }
+                        break;
+                    }
+                    case "update-sync-rm": {
+                        yt2009.masterWarningRm()
+                        break;
+                    }
+                    case "version-warning": {
+                        if(data.version !== version) {
+                            yt2009_home({
+                                "type": "version-warning",
+                                "version": data.version,
+                                "current": version
+                            }, () => {})
                         }
                         break;
                     }
@@ -1184,8 +1212,22 @@ app.get("/playnav_get_comments", (req, res) => {
     yt2009_channels.playnav_get_comments(req, res)
 })
 
+let reencodeDevs = [
+    "HTC Streaming Player",
+    "Android NexPlayer",
+    "LG Player 1."
+]
+if(config.reencode_devs && typeof(config.reencode_devs) == "string") {
+    let d = config.reencode_devs.split(",")
+    d.forEach(device => {
+        if(device.length > 1) {
+            reencodeDevs.push(device)
+        }
+    })
+}
 function checkBaseline(req, res) {
     let tr = false;
+    if(!req.headers["user-agent"]) return false;
     if(req.headers["user-agent"].includes("Android")) {
         let androidVersion = 9;
         androidVersion = req.headers["user-agent"].split("Android")[1]
@@ -1196,6 +1238,16 @@ function checkBaseline(req, res) {
             ffmpegEncodeBaseline(req, res)
             tr = true;
         }
+    }
+    let inReencodeDevs = false;
+    reencodeDevs.forEach(dev => {
+        if(req.headers["user-agent"].includes(dev)) {
+            inReencodeDevs = true;
+        }
+    })
+    if(inReencodeDevs) {
+        ffmpegEncodeBaseline(req, res)
+        tr = true;
     }
     return tr;
 }
@@ -1218,11 +1270,6 @@ app.get("/channel_fh264_getvideo", (req, res) => {
     || (fs.existsSync("../assets/" + req.query.v + ".mp4")
     && fs.statSync("../assets/" + req.query.v + ".mp4").size < 5)) {
         yt2009_utils.saveMp4(req.query.v, (vid) => {
-            if(vid.message
-            && vid.message.includes("410")) {
-                res.redirect("/tvhtml5simply?v=" + req.query.v)
-                return;
-            }
             if(!vid || vid.message || typeof(vid) !== "string") {
                 res.sendStatus(404)
                 return;
@@ -1722,6 +1769,7 @@ app.get("/test_only_legacy_cookie_auth", (req, res) => {
 ======
 */
 app.get("/exp_hd", (req, res) => {
+    let lower = req.query.video_id.includes("/lower")
     let id = req.query.video_id.substring(0, 11)
     let quality = "720p"
     if((req.headers.cookie
@@ -1746,7 +1794,11 @@ app.get("/exp_hd", (req, res) => {
             if(success) {
                 res.redirect("/assets/" + success)
             } else {
-                res.sendStatus(404)
+                if(lower) {
+                    res.redirect("/get_480?video_id=" + id + "/lower")
+                } else {
+                    res.sendStatus(404)
+                }
             }
         }, false, quality)
     }
@@ -1758,6 +1810,7 @@ app.get("/exp_hd", (req, res) => {
 ======
 */
 app.get("/get_480", (req, res) => {
+    let lower = req.query.video_id.includes("/lower")
     let id = req.query.video_id.substring(0, 11)
     let quality = "480p"
     // callback mp4 if we already have one
@@ -1768,7 +1821,11 @@ app.get("/get_480", (req, res) => {
             if(success) {
                 res.redirect("/assets/" + success)
             } else {
-                res.sendStatus(404)
+                if(lower) {
+                    res.redirect("/channel_fh264_getvideo?v=" + id)
+                } else {
+                    res.sendStatus(404)
+                }
             }
         }, false, quality)
     }
@@ -1811,12 +1868,26 @@ videoProcessEndpoints.forEach(endpoint => {
 mobile (apk) endpoints
 ======
 */
+let mobileHelper = false;
+let useMobileHelper = false;
+if(fs.existsSync("./yt2009mobilehelper.js")) {
+    require("./yt2009mobilehelper").set(app)
+    mobileHelper = require("./yt2009mobilehelper");
+    useMobileHelper = true;
+}
 app.post("/youtube/accounts/registerDevice", (req, res) => {
     let deviceId = ""
-    while(deviceId.length !== 5) {
+    while(deviceId.length !== 7) {
         deviceId += "qwertyuiopasdfghjklzxcvbnm1234567890".split("")
                     [Math.floor(Math.random() * 36)]
     }
+    while(useMobileHelper && mobileHelper.hasLogin(deviceId)) {
+        deviceId = ""
+        while(deviceId.length !== 7) {
+            deviceId += "qwertyuiopasdfghjklzxcvbnm1234567890".split("")
+                        [Math.floor(Math.random() * 36)]
+        }
+    } 
     /*
     as cool as that text was, i have to get rid of it from response
     for 1.6.21 and below.
@@ -1831,9 +1902,14 @@ app.get("/feeds/api/standardfeeds/*", (req, res) => {
     yt2009_mobile.feeds(req, res)
 })
 app.get("/feeds/api/videos/*/comments", (req, res) => {
-    yt2009_mobile.apkVideoComments(req, res)
+    let mhelper = (useMobileHelper && mobileHelper.hasLogin(req))
+    yt2009_mobile.apkVideoComments(req, res, mhelper)
 })
 app.post("/feeds/api/videos/*/comments", (req, res) => {
+    if(useMobileHelper && mobileHelper.hasLogin(req)) {
+        mobileHelper.addComment(req, res)
+        return;
+    }
     yt2009_mobile.videoCommentPost(req, res)
 })
 let twoHundredEndpoints = [
@@ -1842,11 +1918,16 @@ let twoHundredEndpoints = [
     "/feeds/api/users/*/subscriptions"
 ]
 twoHundredEndpoints.forEach(e => {
+    if(useMobileHelper) return;
     app.post(e, (req, res) => {
         res.status(200).send()
     })
 })
 app.get("/feeds/api/videos/*/related", (req, res) => {
+    if(useMobileHelper && mobileHelper.hasLogin(req)) {
+        mobileHelper.personalizedRelated(req, res)
+        return;
+    }
     yt2009_mobile.apkVideoRelated(req, res)
 })
 app.get("/feeds/api/videos/*", (req, res) => {
@@ -1856,9 +1937,67 @@ app.get("/feeds/api/videos/*", (req, res) => {
     }
 })
 app.post("/feeds/api/videos/*/ratings", (req, res) => {
+    if(useMobileHelper && mobileHelper.hasLogin(req)) {
+        mobileHelper.rateVideo(req, res)
+        return;
+    }
     res.status(200).send()
 })
+app.get("/feeds/api/users/default/subscriptions", (req, res, next) => {
+    if(useMobileHelper && mobileHelper.hasLogin(req)) {
+        mobileHelper.getSubscriptions(req, res)
+        return;
+    }
+    next()
+})
+app.get("/feeds/api/users/default/playlists", (req, res, next) => {
+    if(useMobileHelper && mobileHelper.hasLogin(req)) {
+        mobileHelper.getPlaylists(req, res)
+        return;
+    }
+    next()
+})
+app.get("/feeds/api/users/default/uploads", (req, res, next) => {
+    if(useMobileHelper && mobileHelper.hasLogin(req)) {
+        mobileHelper.getUploads(req, res)
+        return;
+    }
+    next()
+})
+app.get("/feeds/api/users/default/watch_later", (req, res, next) => {
+    if(useMobileHelper && mobileHelper.hasLogin(req)) {
+        req.playlistId = "WL"
+        mobileHelper.pullPlaylistAsUser(req, res)
+        return;
+    }
+    next()
+})
+app.get("/feeds/api/users/default/favorites", (req, res, next) => {
+    if(useMobileHelper && mobileHelper.hasLogin(req)) {
+        req.unfiltered = true;
+        req.fake = true;
+        let done = false;
+        mobileHelper.getPlaylists(req, {"send": (d) => {
+            d.forEach(p => {
+                if(p[1] == "Favorites") {
+                    done = true;
+                    res.redirect("/feeds/api/users/you/playlists/" + p[0])
+                }
+            })
+
+            if(!done) {
+                res.send(yt2009_templates.gdata_emptyfeed)
+            }
+        },"set": function(s1,s2){}})
+        return;
+    }
+    next()
+})
 app.get("/feeds/api/users/*/recommendations", (req, res) => {
+    if(useMobileHelper) {
+        mobileHelper.handle_recommendations(req, res)
+        return;
+    }
     res.redirect("/feeds/api/standardfeeds/recently_featured")
 })
 app.get("/feeds/api/users/default/*", (req, res) => {
@@ -1873,6 +2012,11 @@ app.get("/feeds/api/users/*/newsubscriptionvideos", (req, res) => {
 app.get("/feeds/api/users/*/uploads", (req, res) => {
     yt2009_mobile.userVideos(req, res)
 })
+if(useMobileHelper) {
+    app.get("/feeds/api/users/you/playlists/*", (req, res) => {
+        mobileHelper.pullPlaylistAsUser(req, res)
+    })
+}
 app.get("/feeds/api/users/*/playlists/*", (req, res) => {
     yt2009_mobile.userPlaylistStart(req, res)
 })
@@ -1883,6 +2027,11 @@ app.get("/feeds/api/users/*/favorites", (req, res) => {
     yt2009_mobile.userFavorites(req, res)
 })
 app.get("/feeds/api/users/*", (req, res) => {
+    if(req.originalUrl.includes("users/default")
+    && useMobileHelper && mobileHelper.hasLogin(req)) {
+        mobileHelper.userData(req, res)
+        return;
+    }
     yt2009_mobile.userInfo(req, res)
 })
 app.get("/feeds/api/events", (req, res) => {
@@ -1903,6 +2052,9 @@ app.post("/mobile/save_flags", (req, res) => {
 })
 app.get("/mobile/get_flags", (req, res) => {
     res.send(yt2009_mobileflags.get_flags(req));
+})
+app.get("/mobile/avatar_process", (req, res) => {
+    yt2009_mobile.avatarUncrop(req, res)
 })
 let shorter_sessions = {}
 app.get("/shorten_session", (req, res) => {
@@ -1975,6 +2127,23 @@ app.get("/mobile/gdata_gen_auth_page", (req, res) => {
 app.post("/mobile/gdata_set_auth", (req, res) => {
     yt2009gdataauths.setAuth(req, res)
 })
+if(useMobileHelper) {
+    app.post("/feeds/api/users/default/playlists", (req, res) => {
+        mobileHelper.createPlaylist(req, res)
+    })
+    app.post("/feeds/api/users/you/playlists/*", (req, res) => {
+        mobileHelper.addToPlaylist(req, res);
+    })
+    app.post("/feeds/api/users/default/favorites", (req, res) => {
+        mobileHelper.addToFavorites(req, res);
+    })
+    app.post("/feeds/api/users/default/watch_later", (req, res) => {
+        mobileHelper.addToWatchLater(req, res);
+    })
+    app.post("/feeds/api/users/default/subscriptions", (req, res) => {
+        mobileHelper.manageSubscription(req, res)
+    })
+}
 
 /*
 ======
@@ -2135,6 +2304,9 @@ app.get("/mobile/blzr/signup", (req, res) => {
     }
 
     res.redirect("/mobile/blzr")
+})
+app.get("/complete/search", (req, res) => {
+    yt2009_blazer.suggest(req, res)
 })
 
 /*
@@ -3113,6 +3285,15 @@ app.get("/comment_search", (req, res) => {
         flags = req.headers.cookie.split("global_flags=")[1].split(";")[0]
     }
 
+    // shows_tab
+    if(flags.includes("shows_tab")) {
+        // shows tab
+        code = code.replace(
+            `<a href="/channels">lang_channels</a>`,
+            `<a href="/channels">lang_channels</a><a href="#">lang_shows</a>`
+        )
+    }
+
     // enumerate
     let comments = yt2009.custom_comments()
     let commentsA = []
@@ -4068,167 +4249,6 @@ if(config.auto_maintain) {
 
 /*
 ======
-login_required via tvhtml5simply
-======
-*/
-let simplyCachedPlayers = {}
-app.get("/tvhtml5simply", (req, res) => {
-    if(!req.query.v) {
-        res.sendStatus(400)
-        return;
-    }
-    let id = req.query.v.substring(0, 11)
-                .replace(/[^a-zA-Z0-9+\-+_]/g, "")
-    if(fs.existsSync("../assets/" + id + ".mp4")
-    && fs.statSync("../assets/" + id + ".mp4").size > 5) {
-        res.redirect("/assets/" + id + ".mp4")
-        return;
-    }
-
-    // range options for seeking through the video
-    let overrideRangeStart = false;
-    let overrideRangeEnd = false;
-    if(req.headers.range
-    && !req.headers.range.includes("=0-")) {
-        overrideRangeStart = parseInt(
-            req.headers.range.split("=")[1].split("-")[0]
-        )
-        if(req.headers.range.split("-")[1]
-        && req.headers.range.split("-")[1].length > 0) {
-            overrideRangeEnd = parseInt(
-                req.headers.range.split("-")[1]
-            )
-        } else {
-            overrideRangeEnd = overrideRangeStart + 100000
-        }
-    }
-
-    // needed stuff~!
-    const fetch = require("node-fetch")
-    let ua = yt2009_constant.headers["user-agent"]
-    res.status(206)
-    res.set("content-type", "video/mp4")
-    
-    // handle googlevideo requests
-    function handlePlayer(player) {
-        if(!player.streamingData
-        || !player.streamingData.formats[0]) {
-            res.sendStatus(404)
-            return;
-        }
-        let url = player.streamingData.formats[0].url
-        let partSize = 100000
-        let fileParts = []
-        let lastSentPart = 0
-        // with range options
-        if(overrideRangeStart) {
-            function p() {
-                let range = overrideRangeStart + (lastSentPart * partSize) + lastSentPart
-                let rangeEnd = range + partSize
-                fetch(url, {
-                    "headers": {
-                        "range": "bytes=" + range + "-" + rangeEnd,
-                        "user-agent": ua
-                    }
-                }).then(r => {r.buffer().then(rr => {
-                    try {
-                        res.set("content-range", r.headers.get("content-range").replace(" ", "="))
-                    }
-                    catch(error) {}
-                    res.write(rr)
-                    lastSentPart++
-                    p()
-                })}).catch(error => {
-                    console.log("error while loading " + id + " part?", error)
-                })
-            }
-            p()
-            return;
-        }
-        // without range options
-        function requestPart(p) {
-            let t = p
-            let partStartB = t * partSize
-            partStartB += t
-            fetch(url, {
-                "headers": {
-                    "range": "bytes=" + (partStartB) + "-" + (partStartB + partSize),
-                    "user-agent": ua
-                }
-            }).then(r => {r.buffer().then(rr => {
-                if(rr.length < 1) {
-                    res.end()
-                    onAllDone()
-                    return;
-                }
-                fileParts[t] = rr
-                try {
-                    res.set("content-range", r.headers.get("content-range"))
-                }
-                catch(error) {}
-                onPartGot(t)
-                requestPart(t + 1)
-            })}).catch(error => {
-                console.log("error while loading " + id + " part?", error)
-            })
-        }
-        function onPartGot(t) {
-            if(t == lastSentPart) {
-                res.write(fileParts[t])
-                lastSentPart++
-            }
-        }
-        function onAllDone() {
-            let h = Buffer.alloc(0)
-            fileParts.forEach(f => {
-                h = Buffer.concat([h, f])
-            })
-            fs.writeFile("../assets/" + id + ".mp4", h, (e) => {})
-        }
-        requestPart(0)
-    }
-    // get video URL from cache or through an innertube request
-    if(simplyCachedPlayers[id]
-    && Date.now() - simplyCachedPlayers[id].cacheAge < 3600000) {
-        handlePlayer(simplyCachedPlayers[id])
-        return;
-    }
-    fetch("https://www.youtube.com/youtubei/v1/player?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8", {
-        "headers": {
-            "accept": "*\/*",
-            "accept-language": "en-US,en;q=0.9,pl;q=0.8",
-            "content-type": "application/json",
-            "cookie": "",
-            "x-goog-authuser": "0",
-            "x-origin": "https://www.youtube.com/",
-			"user-agent": ua
-        },
-        "referrer": "https://www.youtube.com/watch?v=" + id,
-        "referrerPolicy": "origin-when-cross-origin",
-        "body": JSON.stringify({
-            "context": {
-            "client": {
-                "hl": "en",
-                "clientName": "TVHTML5_SIMPLY_EMBEDDED_PLAYER",
-                "clientVersion": "1.0",
-                "mainAppWebInfo": {
-                    "graftUrl": "/watch?v=" + id
-                }
-            }
-            },
-            "videoId": id
-        }),
-        "method": "POST",
-        "mode": "cors"
-    }).then(r => {r.json().then(r => {
-        handlePlayer(r)
-        simplyCachedPlayers[id] = r
-        simplyCachedPlayers[id].cacheAge = Date.now()
-    })})
-})
-
-/*
-======
 thumbnail proxy
 ======
 */
@@ -4348,16 +4368,20 @@ app.get("/auth/read2", (req, res) => {
     </annotations></document>`)
 })
 
-if(config.ac) {
-    let exceptions = [
-        "uncaughtException", "unhandledRejection"
-    ]
-    exceptions.forEach(e => {
-        process.on(e, (msg) => {
-            console.log(msg)
-        })
+/*
+======
+cfg.ac (merged)
+======
+*/
+
+let exceptions = [
+    "uncaughtException", "unhandledRejection"
+]
+exceptions.forEach(e => {
+    process.on(e, (msg) => {
+        console.log(msg)
     })
-}
+})
 
 /*
 ======
@@ -4380,7 +4404,10 @@ app.post("/export_flags_data", (req, res) => {
     }
     let b = req.body.toString()
     let randomCode = ""
-    if(b.startsWith("c:") && b.includes("\x00")) {
+    if(b.startsWith("c:") && (
+        b.includes("\x00")
+        || b.includes("/x/x/x/x/x/")
+    )) {
         function s() {
             randomCode = ""
             let c = "qwertyuiopasdfghjklzxcvbnm".split("")
@@ -4428,6 +4455,13 @@ let obamaVideoObject = yt2009_constant.homepageCache_news.filter(s => s.id == "Z
 if(obamaVideoObject) {
     let newNewsCache = yt2009_constant.homepageCache_news.filter(s => s.id !== "Z9eId_9n1NM")
     yt2009_constant.homepageCache_news = newNewsCache;
+    fs.writeFileSync("./yt2009constants.json", JSON.stringify(yt2009_constant))
+}
+// remove zombies video (privated)
+let zombiesVideoObject = yt2009_constant.homepageCache_featured.filter(s => s.id == "czWoP7qVNSI")
+if(zombiesVideoObject) {
+    let newFeaturedCache = yt2009_constant.homepageCache_featured.filter(s => s.id !== "czWoP7qVNSI")
+    yt2009_constant.homepageCache_featured = newFeaturedCache
     fs.writeFileSync("./yt2009constants.json", JSON.stringify(yt2009_constant))
 }
 

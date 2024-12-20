@@ -523,8 +523,8 @@ module.exports = {
         if(max < 0 || isNaN(max)) {
             max = start + 25
         }
-        if(max > 1000) {
-            max = 1000
+        if(max > 100) {
+            max = 100
         }
         if(req.originalUrl.includes("featured")
         || (req.originalUrl.includes("most_discussed")
@@ -564,6 +564,11 @@ module.exports = {
                 }, "", "", false, false, true)
             })
             response = response.split(">25<").join(`>${videosAdded}<`)
+            if(vids.length == 0) {
+                response += templates.gdata_feedEnd
+                res.set("content-type", "application/atom+xml")
+                res.send(response)
+            }
         } else if(req.originalUrl.includes("most_popular")) {
             // grab popular videos (100k+ views) from featured 25-50
             // and put them into the feed
@@ -615,6 +620,10 @@ module.exports = {
         let id = req.originalUrl.split("/videos/")[1]
                                 .split("?")[0]
                                 .split("#")[0]
+        if(id == "12345678911" && fs.existsSync("./yt2009mobilehelper.js")) {
+            require("./yt2009mobilehelper").outsourceBareVideo(req, res)
+            return;
+        }
         yt2009html.fetch_video_data(id, (data) => {
             if(!data.title) {
                 res.sendStatus(404)
@@ -721,7 +730,7 @@ module.exports = {
     },
 
     // apk video comments
-    "apkVideoComments": function(req, res) {
+    "apkVideoComments": function(req, res, useMobileHelper) {
         if(!mobileauths.isAuthorized(req, res)) return;
         let id = req.originalUrl.split("/videos/")[1]
                                 .split("/comments")[0]
@@ -736,6 +745,19 @@ module.exports = {
                         utils.asciify(c.author),
                         c.text.replace(/\p{Other_Symbol}/gui, ""),
                         c.time
+                    )
+                })
+            }
+            if(useMobileHelper) {
+                let comments = require("./yt2009mobilehelper")
+                               .pullCommentsByUser(req);
+                comments = comments.filter(s => s.video == id)
+                comments.forEach(c => {
+                    response += templates.gdata_feedComment(
+                        c.video,
+                        c.name,
+                        c.content,
+                        c.date
                     )
                 })
             }
@@ -804,18 +826,18 @@ module.exports = {
                 videoViewCount += utils.bareCount(video.views)
             })
 
+            let waitForVCount = false;
+
             let videoCount = (data.videos || []).length
-            if(flags.includes("uploads-count") && videoCount >= 30) {
-                // try to get exact video count if flag enabled
-                if(data.videoCount) {
-                    videoCount = data.videoCount
-                } else {
-                    channels.fill_videocount(path, (count) => {
-                        if(count !== "") {
-                            videoCount = count;
-                        }
-                    })
-                }
+            if(videoCount >= 30) {
+                // try to get exact video count
+                waitForVCount = true;
+                channels.fill_videocount(path, (count) => {
+                    if(count !== "") {
+                        videoCount = count;
+                        sendData();
+                    }
+                })
             }
 
             let subcount = data.properties
@@ -825,16 +847,19 @@ module.exports = {
 
             let channelViewCount = Math.floor(videoViewCount / 90)
             res.set("content-type", "application/atom+xml")
-            res.send(templates.gdata_user(
-                id,
-                utils.asciify(data.name || id),
-                `http://${config.ip}:${config.port}/${data.avatar}`,
-                subcount,
-                videoCount,
-                channelViewCount,
-                videoViewCount,
-                flags
-            ))
+            function sendData() {
+                res.send(templates.gdata_user(
+                    id,
+                    utils.asciify(data.name || id),
+                    `http://${config.ip}:${config.port}/${data.avatar}`,
+                    subcount,
+                    videoCount,
+                    channelViewCount,
+                    videoViewCount,
+                    flags
+                ))
+            }
+            if(!waitForVCount) {sendData();}
         }}, "", true)
     },
 
@@ -1063,7 +1088,7 @@ module.exports = {
                     ),
                     utils.time_to_seconds(video.time || "2:34"),
                     videoCacheData.description || "",
-                    videoCacheData.upload || "2009",
+                    videoCacheData.upload || "",
                     (videoCacheData.tags || []).join() || "-",
                     videoCacheData.category || "-",
                     mobileflags.get_flags(req).watch
@@ -1233,6 +1258,40 @@ module.exports = {
     "commentCallback": function(msg) {
         if(syncCommentCallbacks[msg.id]) {
             syncCommentCallbacks[msg.id](msg)
+        }
+    },
+
+    "avatarUncrop": function(req, res) {
+        if(!req.query.avatar
+        || !req.query.avatar.startsWith("/assets/")
+        || req.query.avatar.includes("../")) {
+            res.sendStatus(400)
+            return;
+        }
+        let ftype = req.query.avatar.split(".")
+        ftype = ftype[ftype.length - 1]
+        let target = req.query.avatar + "_uncropped." + ftype
+        if(fs.existsSync(target)) {
+            res.setHeader("Content-Type", "image/png")
+            res.send(fs.readFileSync("../assets/" + target))
+        } else if(fs.existsSync("../" + req.query.avatar)) {
+            let start = `${__dirname.split("\\").join("/")}/..`
+            let command = [
+                "magick -size 122x122 xc: ",
+                `-draw "image over 25,25 72,72 '${start}${req.query.avatar}'"`,
+                `"${start}${target}"`
+            ].join(" ")
+            require("child_process").exec(command, (e, so, se) => {
+                if(fs.existsSync("../" + target)) {
+                    res.setHeader("Content-Type", "image/png")
+                    res.send(fs.readFileSync("../" + target))
+                } else {
+                    res.sendStatus(500)
+                }
+            })
+        } else {
+            res.sendStatus(400)
+            return;
         }
     }
 }
